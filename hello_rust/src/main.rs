@@ -14,7 +14,7 @@ use crossterm::{
 use rand::Rng;
 // Standard library imports for collections, input/output, and time management.
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     io::{self, Write},
     time::{Duration, Instant},
 };
@@ -28,7 +28,7 @@ const HEIGHT: u16 = 20;
 // #[derive(...)] asks the compiler to automatically implement basic behaviors for us.
 // - Clone/Copy: Allows us to duplicate this Point easily.
 // - PartialEq/Eq: Allows us to compare two Points with `==`.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct Point {
     x: u16,
     y: u16,
@@ -61,8 +61,10 @@ struct Game {
     // items from both the front and the back. Perfect for a snake!
     snake: VecDeque<Point>,
     food: Point,
+    obstacles: HashSet<Point>,
     direction: Direction,
-    score: usize, // `usize` is the standard size for indexing collections (usually 64-bit on modern PCs).
+    score: usize,
+    level: u32,
     game_over: bool,
     width: u16,
     height: u16,
@@ -90,9 +92,11 @@ impl Game {
 
         let mut game = Game {
             snake,
-            food: Point { x: 0, y: 0 }, // Placeholder, we'll randomize it immediately below.
+            food: Point { x: 0, y: 0 },
+            obstacles: HashSet::new(),
             direction: Direction::Right,
             score: 0,
+            level: 1,
             game_over: false,
             width,
             height,
@@ -112,10 +116,47 @@ impl Game {
             let y = rng.gen_range(1..self.height - 1);
             let point = Point { x, y };
             
-            // If the generated point is NOT inside the snake body, we found a valid spot!
-            if !self.snake.contains(&point) {
+            // If the generated point is NOT inside the snake body or obstacles, we found a valid spot!
+            if !self.snake.contains(&point) && !self.obstacles.contains(&point) {
                 self.food = point;
                 break; // Exit the loop.
+            }
+        }
+    }
+
+    // Generate random obstacles for the current level
+    fn generate_level(&mut self) {
+        let mut rng = rand::thread_rng();
+        self.obstacles.clear();
+        
+        // Number of obstacles increases with level
+        let num_obstacles = self.level * 3 + 5;
+        
+        for _ in 0..num_obstacles {
+            // Randomly choose vertical or horizontal wall
+            let is_horizontal = rng.gen_bool(0.5);
+            let length = rng.gen_range(3..8);
+            
+            let start_x = rng.gen_range(2..self.width - 2);
+            let start_y = rng.gen_range(2..self.height - 2);
+            
+            for i in 0..length {
+                let p = if is_horizontal {
+                    Point { x: start_x + i, y: start_y }
+                } else {
+                    Point { x: start_x, y: start_y + i }
+                };
+                
+                // Keep obstacles within bounds and away from snake/food
+                if p.x > 0 && p.x < self.width - 1 
+                   && p.y > 0 && p.y < self.height - 1
+                   && !self.snake.contains(&p)
+                   && p != self.food 
+                   // Ensure we don't spawn right in front of the snake's current path (simple check)
+                   && self.snake.front().map_or(true, |head| (head.x as i32 - p.x as i32).abs() + (head.y as i32 - p.y as i32).abs() > 3)
+                {
+                    self.obstacles.insert(p);
+                }
             }
         }
     }
@@ -169,6 +210,12 @@ impl Game {
             return;   
         }
 
+        // Obstacle collision check
+        if self.obstacles.contains(&new_head) {
+            self.game_over = true;
+            return;
+        }
+
         // Move the snake:
         // 1. Add the new head position to the front of the deque.
         self.snake.push_front(new_head);
@@ -178,6 +225,12 @@ impl Game {
             // Ate food: Score goes up, spawn new food.
             self.score += 1;
             self.spawn_food();
+            
+            // Level Up Check
+            if self.score % 5 == 0 {
+                self.level += 1;
+                self.generate_level();
+            }
             // IMPORTANT: We do NOT remove the tail. This makes the snake grow by 1 block!
         } else {
             // Didn't eat: Remove the last block (tail) to maintain the same length.
@@ -211,10 +264,19 @@ impl Game {
                 .queue(Print("█"))?;
         }
 
+        // Draw Obstacles
+        stdout.queue(SetForegroundColor(Color::DarkGrey))?;
+        for obstacle in &self.obstacles {
+            stdout
+                .queue(MoveTo(obstacle.x, obstacle.y))?
+                .queue(Print("▓"))?;
+        }
+
         // Draw Score
         stdout
             .queue(MoveTo(2, 0))?
-            .queue(Print(format!(" Score: {} ", self.score)))?;
+            .queue(MoveTo(2, 0))?
+            .queue(Print(format!(" Score: {}  Level: {} ", self.score, self.level)))?;
 
         // Draw Food
         stdout
